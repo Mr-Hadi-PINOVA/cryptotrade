@@ -1,25 +1,63 @@
 package main
 
 import (
-  "fmt"
+	"context"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"cryptotrade/internal/config"
+	"cryptotrade/internal/handler"
+	"cryptotrade/internal/repository/memory"
+	"cryptotrade/internal/router"
+	"cryptotrade/internal/service"
 )
 
-//TIP To run your code, right-click the code and select <b>Run</b>. Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.
-
 func main() {
-  //TIP Press <shortcut actionId="ShowIntentionActions"/> when your caret is at the underlined or highlighted text
-  // to see how GoLand suggests fixing it.
-  s := "gopher"
-  fmt.Println("Hello and welcome, %s!", s)
+	cfg := config.Load()
 
-  for i := 1; i <= 5; i++ {
-	//TIP You can try debugging your code. We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-	// for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>. To start your debugging session, 
-	// right-click your code in the editor and select the <b>Debug</b> option. 
-	fmt.Println("i =", 100/i)
-  }
+	productRepo := memory.NewProductRepository()
+	userRepo := memory.NewUserRepository()
+	orderRepo := memory.NewOrderRepository()
+
+	productService := service.NewProductService(productRepo)
+	userService := service.NewUserService(userRepo)
+	orderService := service.NewOrderService(orderRepo, userRepo, productRepo)
+
+	productHandler := handler.NewProductHandler(productService)
+	userHandler := handler.NewUserHandler(userService)
+	orderHandler := handler.NewOrderHandler(orderService)
+
+	engine := router.SetupRouter(cfg, productHandler, userHandler, orderHandler)
+
+	srv := &http.Server{
+		Addr:         cfg.ServerPort,
+		Handler:      engine,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	go func() {
+		log.Printf("starting server on %s", cfg.ServerPort)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	log.Println("shutting down server")
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
 }
-
-//TIP See GoLand help at <a href="https://www.jetbrains.com/help/go/">jetbrains.com/help/go/</a>.
-// Also, you can try interactive lessons for GoLand by selecting 'Help | Learn IDE Features' from the main menu.
